@@ -1,7 +1,10 @@
-modules = ["python-3.11"]
+modules = ["python-3.12"]
 
 # Install lean deps once, then run. (Replit caches the venv between runs.)
 run = "pip install -r requirements.txt -q && python main.py"
+
+[nix]
+channel = "stable-24_11"
 
 [env]
 PORT = "8000"
