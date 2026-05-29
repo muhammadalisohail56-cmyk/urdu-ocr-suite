@@ -1,0 +1,16 @@
+# ── Full hybrid install: base suite + local UTRNet (PyTorch) stack. ────────
+# Use this only when running the hybrid OCR mode (GEMINI_ONLY=0), e.g. for
+# modern printed Urdu where UTRNet contributes. Pulls in ~1 GB of ML deps.
+#
+#   pip install -r requirements-hybrid.txt
+
+-r requirements.txt
+
+# --- Local UTRNet (PyTorch) inference ---
+torch==2.8.0
+torchvision==0.23.0
+numpy==2.2.1
+
+# --- Required by vendored UTRNet utils.py ---
+matplotlib==3.10.0
+pytz==2024.2

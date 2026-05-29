@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<!-- STATIC PREVIEW of templates/login.html — sample only, no backend. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Preview — Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex items-center justify-center">
+  <div class="w-full max-w-md p-8">
+    <div class="text-center mb-8">
+      <h1 class="text-3xl font-bold tracking-tight">Urdu OCR Suite</h1>
+      <p class="text-slate-400 mt-2">Private workspace — authorized users only</p>
+    </div>
+    <form onsubmit="event.preventDefault()" class="bg-slate-800 rounded-2xl shadow-xl p-8 space-y-5">
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Username</label>
+        <input value="wafi momin"
+               class="w-full rounded-lg bg-slate-900 border border-slate-700 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Password</label>
+        <input type="password" value="••••••••••••"
+               class="w-full rounded-lg bg-slate-900 border border-slate-700 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+      </div>
+      <button type="submit"
+              class="w-full bg-emerald-600 hover:bg-emerald-500 transition rounded-lg py-2.5 font-semibold">
+        Sign in
+      </button>
+    </form>
+    <p class="text-center text-xs text-slate-500 mt-6">Restricted access · 2-user limit</p>
+  </div>
+</body>
+</html>

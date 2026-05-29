@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Urdu OCR Suite — Workspace</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    .urdu { font-family: 'Noto Nastaliq Urdu', serif; line-height: 2.4; direction: rtl; }
+    [x-cloak]{display:none!important}
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen" x-data="workspace({{ doc_id }})" x-init="init()">
+
+  <header class="border-b border-slate-800 bg-slate-950/60 sticky top-0 z-20 backdrop-blur">
+    <div class="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-4">
+        <a href="/" class="text-slate-400 hover:text-white">← Dashboard</a>
+        <h1 class="text-lg font-semibold" x-text="doc ? doc.title : 'Loading…'"></h1>
+      </div>
+      <div class="flex items-center gap-3">
+        <a :href="'/api/documents/'+docId+'/export'"
+           class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold">
+          Export .docx
+        </a>
+        <a href="/logout" class="text-red-400 hover:text-red-300 text-sm">Logout</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-screen-2xl mx-auto px-6 py-6">
+    <!-- Page controls + confidence overlay -->
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div class="flex items-center gap-2">
+        <button @click="prev()" :disabled="idx<=0"
+                class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40">‹ Prev</button>
+        <span class="text-slate-300" x-text="'Page '+(idx+1)+' of '+pages.length"></span>
+        <button @click="next()" :disabled="idx>=pages.length-1"
+                class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40">Next ›</button>
+        <button @click="nextToReview()"
+                class="px-3 py-1.5 rounded-lg bg-amber-600/80 hover:bg-amber-500 text-sm"
+                title="Jump to the next unverified or low-confidence page">Next to review ⟶</button>
+      </div>
+      <div class="flex items-center gap-3" x-show="current">
+        <span class="text-xs text-slate-400"
+              x-text="verifiedCount+' / '+pages.length+' verified'"></span>
+        <span class="text-sm text-slate-400">Confidence</span>
+        <span class="px-3 py-1 rounded-full text-sm font-semibold" :class="confClass(current?.confidence)"
+              x-text="current ? Math.round(current.confidence*100)+'%' : ''"></span>
+        <span x-show="current && current.confidence < 0.6 && !current.verified"
+              class="text-amber-300 text-sm">⚠ Needs proofreading</span>
+        <button @click="copyText()" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm"
+                x-text="copied ? 'Copied ✓' : 'Copy'"></button>
+        <button @click="rerun()" :disabled="rerunning"
+                class="px-2.5 py-1 rounded-lg bg-sky-700 hover:bg-sky-600 text-sm disabled:opacity-50"
+                x-text="rerunning ? 'Re-running…' : 'Re-run page'"></button>
+        <label class="flex items-center gap-1.5 cursor-pointer select-none px-2.5 py-1 rounded-lg"
+               :class="current?.verified ? 'bg-emerald-600/30 text-emerald-300' : 'bg-slate-800'">
+          <input type="checkbox" :checked="current?.verified"
+                 @change="toggleVerified($event.target.checked)" class="accent-emerald-500" />
+          <span class="text-sm">Verified</span>
+        </label>
+        <span class="text-xs text-slate-500" x-show="saving">saving…</span>
+        <span class="text-xs text-emerald-400" x-show="saved">saved ✓</span>
+      </div>
+    </div>
+
+    <!-- Split screen -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6" style="height: calc(100vh - 200px)">
+      <!-- Left: original page image -->
+      <div class="bg-slate-950 rounded-xl border border-slate-800 overflow-auto flex items-start justify-center p-4">
+        <img x-show="current" :src="current ? '/api/pages/'+current.id+'/image?k='+imgKey : ''"
+             class="max-w-full rounded shadow-lg" alt="page image" />
+        <p x-show="!current" class="text-slate-600 m-auto">No page</p>
+      </div>
+      <!-- Right: editable reconciled text -->
+      <div class="bg-slate-950 rounded-xl border border-slate-800 flex flex-col">
+        <div class="px-4 py-2 border-b border-slate-800 text-xs text-slate-500 flex justify-between">
+          <span>Reconciled Urdu text — editable</span>
+          <span x-show="current && current.notes" x-text="current?.notes" class="italic truncate max-w-md"></span>
+        </div>
+        <textarea x-show="current" x-model="text" @input="queueSave()"
+                  class="urdu flex-1 w-full bg-transparent p-6 text-xl resize-none focus:outline-none"
+                  spellcheck="false"></textarea>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    function workspace(docId) {
+      return {
+        docId, doc: null, pages: [], idx: 0, text: '',
+        saving: false, saved: false, rerunning: false, copied: false, imgKey: Date.now(), _t: null,
+
+        get current() { return this.pages[this.idx] || null; },
+        get verifiedCount() { return this.pages.filter(p => p.verified).length; },
+
+        async init() {
+          const r = await fetch('/api/documents/' + this.docId);
+          if (r.status === 401) { location.href = '/login'; return; }
+          if (!r.ok) { alert('Failed to load document.'); return; }
+          this.doc = await r.json();
+          this.pages = this.doc.pages || [];
+          this.load();
+          window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'TEXTAREA') return;
+            if (e.key === 'ArrowLeft') this.next();   // RTL: left advances
+            if (e.key === 'ArrowRight') this.prev();
+          });
+        },
+        load() { this.text = this.current ? this.current.text : ''; this.saved = false; },
+        prev() { if (this.idx > 0) { this.flush(); this.idx--; this.load(); } },
+        next() { if (this.idx < this.pages.length - 1) { this.flush(); this.idx++; this.load(); } },
+
+        confClass(c) {
+          if (c == null) return 'bg-slate-700 text-slate-300';
+          if (c >= 0.85) return 'bg-emerald-500/25 text-emerald-300';
+          if (c >= 0.6) return 'bg-amber-500/25 text-amber-300';
+          return 'bg-red-500/25 text-red-300';
+        },
+
+        queueSave() {
+          this.saved = false;
+          clearTimeout(this._t);
+          this._t = setTimeout(() => this.flush(), 700);  // debounce autosave
+        },
+        async flush() {
+          if (!this.current) return;
+          if (this.text === this.current.text) return;
+          this.saving = true;
+          const id = this.current.id;
+          const body = JSON.stringify({ text: this.text });
+          const r = await fetch('/api/pages/' + id, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body,
+          });
+          this.saving = false;
+          if (r.ok) { this.current.text = this.text; this.saved = true; }
+        },
+
+        async toggleVerified(v) {
+          if (!this.current) return;
+          await this.flush();  // persist any pending text edits first
+          const r = await fetch('/api/pages/' + this.current.id, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ verified: v }),
+          });
+          if (r.ok) this.current.verified = v;
+        },
+
+        async rerun() {
+          if (!this.current) return;
+          if (!confirm('Re-run OCR on this page? Current text will be replaced and the page un-verified.')) return;
+          this.rerunning = true;
+          try {
+            const r = await fetch('/api/pages/' + this.current.id + '/rerun', { method: 'POST' });
+            if (!r.ok) { alert('Re-run failed: ' + (await r.text())); return; }
+            const updated = await r.json();
+            Object.assign(this.current, updated);
+            this.text = updated.text;
+            this.imgKey = Date.now();  // bust the cached (re-rendered) image
+          } finally { this.rerunning = false; }
+        },
+
+        nextToReview() {
+          // next page (after current, wrapping) that is unverified or low-confidence
+          const n = this.pages.length;
+          for (let step = 1; step <= n; step++) {
+            const j = (this.idx + step) % n;
+            const p = this.pages[j];
+            if (!p.verified || p.confidence < 0.6) {
+              this.flush(); this.idx = j; this.load(); return;
+            }
+          }
+          alert('All pages are verified and high-confidence. 🎉');
+        },
+
+        async copyText() {
+          try {
+            await navigator.clipboard.writeText(this.text || '');
+            this.copied = true; setTimeout(() => this.copied = false, 1500);
+          } catch (e) { alert('Copy failed — your browser blocked clipboard access.'); }
+        },
+      };
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!-- STATIC PREVIEW of templates/dashboard.html — sample data, no backend. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Preview — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen" x-data="preview()">
+
+  <header class="border-b border-slate-800 bg-slate-950/60 sticky top-0 z-20 backdrop-blur">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+      <h1 class="text-xl font-bold">Urdu OCR Suite</h1>
+      <div class="flex items-center gap-4 text-sm text-slate-400">
+        <span>Signed in as <span class="text-slate-200 font-medium">wafi momin</span></span>
+        <a href="#" class="text-red-400 hover:text-red-300">Logout</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
+    <!-- Upload zone -->
+    <section>
+      <div class="border-2 border-dashed border-slate-700 rounded-2xl p-10 text-center cursor-pointer hover:border-emerald-500 hover:bg-emerald-500/5 transition">
+        <p class="text-lg font-medium">Drag &amp; drop a PDF here</p>
+        <p class="text-slate-400 text-sm mt-1">or click to browse · PDF only</p>
+      </div>
+    </section>
+
+    <!-- Documents table -->
+    <section>
+      <div class="flex items-center justify-between mb-4 gap-4">
+        <h2 class="text-lg font-semibold">Documents</h2>
+        <input x-model="search" type="search" placeholder="Search title or author…"
+               class="w-72 rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+      </div>
+      <div class="overflow-x-auto rounded-xl border border-slate-800">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-950/60 text-slate-400 text-left">
+            <tr>
+              <th class="px-4 py-3">Name / Title</th>
+              <th class="px-4 py-3">Author</th>
+              <th class="px-4 py-3">Year</th>
+              <th class="px-4 py-3">Pages OCRed</th>
+              <th class="px-4 py-3">Confidence</th>
+              <th class="px-4 py-3">Status</th>
+              <th class="px-4 py-3">Date Added</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <template x-for="doc in filtered" :key="doc.id">
+              <tr class="hover:bg-slate-800/40">
+                <td class="px-4 py-3"><input :value="doc.title" class="bg-transparent border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:outline-none w-full" /></td>
+                <td class="px-4 py-3"><input :value="doc.author" placeholder="—" class="bg-transparent border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:outline-none w-full" /></td>
+                <td class="px-4 py-3"><input :value="doc.year" placeholder="—" class="bg-transparent border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:outline-none w-20" /></td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  <template x-if="doc.status==='processing'">
+                    <div class="w-40">
+                      <div class="flex justify-between text-xs text-slate-400 mb-1">
+                        <span x-text="'Page '+doc.page+' of '+doc.num_pages"></span>
+                        <span x-text="'ETA '+doc.eta"></span>
+                      </div>
+                      <div class="h-2 bg-slate-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-emerald-500" :style="'width:'+doc.percent+'%'"></div>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="doc.status!=='processing'">
+                    <span>
+                      <span x-text="doc.pages_ocred+' / '+doc.num_pages"></span>
+                      <span x-show="doc.verified_count>0" class="text-emerald-400 text-xs ml-1" x-text="'· ✓'+doc.verified_count"></span>
+                    </span>
+                  </template>
+                </td>
+                <td class="px-4 py-3">
+                  <span x-show="doc.avg_confidence>0" :class="confClass(doc.avg_confidence)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="Math.round(doc.avg_confidence*100)+'%'"></span>
+                  <span x-show="doc.avg_confidence<=0" class="text-slate-600">—</span>
+                </td>
+                <td class="px-4 py-3">
+                  <span :class="{'text-amber-400':doc.status==='pending','text-emerald-400':doc.status==='completed','text-sky-400':doc.status==='processing','text-red-400':doc.status==='failed'}" class="capitalize" x-text="doc.status"></span>
+                </td>
+                <td class="px-4 py-3 text-slate-400 whitespace-nowrap" x-text="doc.date"></td>
+                <td class="px-4 py-3 text-right whitespace-nowrap space-x-2">
+                  <a x-show="doc.status==='completed'" href="./document.html" class="text-sky-400 hover:text-sky-300">Open</a>
+                  <a x-show="doc.status==='completed'" href="#" class="text-slate-300 hover:text-white">DOCX</a>
+                  <a x-show="doc.status==='completed'" href="#" class="text-slate-300 hover:text-white">TXT</a>
+                  <button x-show="doc.status==='pending'" class="text-emerald-400 hover:text-emerald-300">Run</button>
+                  <button class="text-red-400 hover:text-red-300">Delete</button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function preview() {
+      return {
+        search: '',
+        documents: [
+          { id:1, title:'Behes Tansikh', author:'Pandit Lekhram', year:'1899', num_pages:10, pages_ocred:10, verified_count:6, avg_confidence:0.93, status:'completed', date:'29 May 2026, 20:12' },
+          { id:2, title:'Diwan-e-Ghalib', author:'Mirza Ghalib', year:'1841', num_pages:24, pages_ocred:7, percent:29, page:7, eta:'3m 40s', verified_count:0, avg_confidence:0.71, status:'processing', date:'29 May 2026, 21:05' },
+          { id:3, title:'Untitled scan batch', author:'', year:'', num_pages:3, pages_ocred:0, verified_count:0, avg_confidence:0, status:'pending', date:'29 May 2026, 21:30' },
+          { id:4, title:'Risala Tasawwuf', author:'—', year:'n.d.', num_pages:48, pages_ocred:48, verified_count:48, avg_confidence:0.55, status:'completed', date:'28 May 2026, 14:02' },
+        ],
+        get filtered() {
+          const q = this.search.trim().toLowerCase();
+          if (!q) return this.documents;
+          return this.documents.filter(d => (d.title||'').toLowerCase().includes(q) || (d.author||'').toLowerCase().includes(q));
+        },
+        confClass(c) {
+          if (c>=0.85) return 'bg-emerald-500/20 text-emerald-300';
+          if (c>=0.6) return 'bg-amber-500/20 text-amber-300';
+          return 'bg-red-500/20 text-red-300';
+        },
+      };
+    }
+  </script>
+</body>
+</html>

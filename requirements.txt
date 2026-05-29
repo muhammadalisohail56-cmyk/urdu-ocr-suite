@@ -1,0 +1,27 @@
+# ── Lean base: everything the default Gemini-only suite needs. ─────────────
+# Installs in seconds (~80 MB). For the UTRNet hybrid path, use
+# requirements-hybrid.txt instead (it includes this file plus the ML stack).
+
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+jinja2==3.1.6
+websockets==16.0
+
+# --- Database ---
+SQLAlchemy==2.0.36
+
+# --- PDF rendering ---
+pymupdf==1.25.1
+Pillow==11.1.0
+
+# --- Gemini API ---
+google-generativeai==0.8.3
+
+# --- Export ---
+python-docx==1.1.2
+
+# --- Config / utils ---
+python-dotenv==1.0.1

@@ -1,0 +1,22 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# App data
+*.db
+storage/
+outputs/
+
+# Large model weights (download/provide separately)
+saved_models/
+
+# OS
+.DS_Store
+
+# Local Claude Code settings
+.claude/settings.local.json

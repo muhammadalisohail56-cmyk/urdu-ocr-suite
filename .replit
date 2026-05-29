@@ -1,0 +1,18 @@
+modules = ["python-3.11"]
+
+# Install lean deps once, then run. (Replit caches the venv between runs.)
+run = "pip install -r requirements.txt -q && python main.py"
+
+[env]
+PORT = "8000"
+
+[[ports]]
+localPort = 8000
+externalPort = 80
+
+[deployment]
+# Reserved VM keeps a single always-on instance with a persistent disk, so the
+# SQLite DB + uploaded files survive restarts. (Autoscale/cloudrun is stateless
+# and would lose them — pick "Reserved VM" in the Deploy pane.)
+deploymentTarget = "gce"
+run = ["sh", "-c", "python main.py"]

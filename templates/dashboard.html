@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Urdu OCR Suite — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen" x-data="dashboard()" x-init="init()">
+
+  <!-- Top bar -->
+  <header class="border-b border-slate-800 bg-slate-950/60 sticky top-0 z-20 backdrop-blur">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+      <h1 class="text-xl font-bold">Urdu OCR Suite</h1>
+      <div class="flex items-center gap-4 text-sm text-slate-400">
+        <span>Signed in as <span class="text-slate-200 font-medium">{{ user }}</span></span>
+        <a href="/logout" class="text-red-400 hover:text-red-300">Logout</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
+
+    <!-- Upload zone -->
+    <section>
+      <div @dragover.prevent="dragging=true" @dragleave.prevent="dragging=false"
+           @drop.prevent="onDrop($event)"
+           :class="dragging ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700'"
+           class="border-2 border-dashed rounded-2xl p-10 text-center transition cursor-pointer"
+           @click="$refs.fileInput.click()">
+        <input type="file" accept="application/pdf" class="hidden" x-ref="fileInput"
+               @change="onPick($event)" />
+        <template x-if="!uploading">
+          <div>
+            <p class="text-lg font-medium">Drag &amp; drop a PDF here</p>
+            <p class="text-slate-400 text-sm mt-1">or click to browse · PDF only</p>
+          </div>
+        </template>
+        <template x-if="uploading">
+          <p class="text-emerald-400 animate-pulse">Uploading &amp; analyzing…</p>
+        </template>
+      </div>
+    </section>
+
+    <!-- Pre-flight estimate modal -->
+    <div x-show="estimate" x-cloak class="fixed inset-0 bg-black/60 flex items-center justify-center z-30">
+      <div class="bg-slate-800 rounded-2xl p-8 w-full max-w-lg space-y-5" @click.away="cancelEstimate()">
+        <h2 class="text-xl font-bold">Confirm OCR Run</h2>
+        <p class="text-slate-400 text-sm">Review the expected Gemini API usage before processing.</p>
+        <template x-if="estimate">
+          <div class="grid grid-cols-2 gap-4">
+            <div class="bg-slate-900 rounded-xl p-4">
+              <div class="text-slate-400 text-xs uppercase">Pages</div>
+              <div class="text-2xl font-bold" x-text="estimate.num_pages"></div>
+            </div>
+            <div class="bg-slate-900 rounded-xl p-4">
+              <div class="text-slate-400 text-xs uppercase">Mode</div>
+              <div class="text-2xl font-bold capitalize" x-text="estimate.mode"></div>
+            </div>
+            <div class="bg-slate-900 rounded-xl p-4">
+              <div class="text-slate-400 text-xs uppercase">Est. Tokens (in / out)</div>
+              <div class="text-lg font-semibold"
+                   x-text="fmt(estimate.input_tokens)+' / '+fmt(estimate.output_tokens)"></div>
+            </div>
+            <div class="bg-slate-900 rounded-xl p-4">
+              <div class="text-slate-400 text-xs uppercase">Est. Cost</div>
+              <div class="text-2xl font-bold text-emerald-400" x-text="'$'+estimate.est_cost_usd"></div>
+            </div>
+          </div>
+        </template>
+        <div class="flex justify-end gap-3 pt-2">
+          <button @click="cancelEstimate()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600">Cancel</button>
+          <button @click="confirmRun()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold">
+            Start OCR
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Documents table -->
+    <section>
+      <div class="flex items-center justify-between mb-4 gap-4">
+        <h2 class="text-lg font-semibold">Documents</h2>
+        <input x-model="search" type="search" placeholder="Search title or author…"
+               class="w-72 rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+      </div>
+      <div class="overflow-x-auto rounded-xl border border-slate-800">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-950/60 text-slate-400 text-left">
+            <tr>
+              <th class="px-4 py-3">Name / Title</th>
+              <th class="px-4 py-3">Author</th>
+              <th class="px-4 py-3">Year</th>
+              <th class="px-4 py-3">Pages OCRed</th>
+              <th class="px-4 py-3">Confidence</th>
+              <th class="px-4 py-3">Status</th>
+              <th class="px-4 py-3">Date Added</th>
+              <th class="px-4 py-3"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <template x-for="doc in filtered" :key="doc.id">
+              <tr class="hover:bg-slate-800/40">
+                <!-- Inline-editable fields -->
+                <td class="px-4 py-3">
+                  <input :value="doc.title" @change="saveField(doc,'title',$event.target.value)"
+                         class="bg-transparent border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:outline-none w-full" />
+                </td>
+                <td class="px-4 py-3">
+                  <input :value="doc.author" placeholder="—" @change="saveField(doc,'author',$event.target.value)"
+                         class="bg-transparent border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:outline-none w-full" />
+                </td>
+                <td class="px-4 py-3">
+                  <input :value="doc.year" placeholder="—" @change="saveField(doc,'year',$event.target.value)"
+                         class="bg-transparent border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:outline-none w-20" />
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">
+                  <template x-if="doc.status==='processing'">
+                    <div class="w-40">
+                      <div class="flex justify-between text-xs text-slate-400 mb-1">
+                        <span x-text="prog[doc.id] ? ('Page '+prog[doc.id].page+' of '+prog[doc.id].num_pages) : 'Starting…'"></span>
+                        <span x-text="prog[doc.id] ? etaFmt(prog[doc.id].eta_seconds) : ''"></span>
+                      </div>
+                      <div class="h-2 bg-slate-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-emerald-500 transition-all"
+                             :style="'width:'+(prog[doc.id]?prog[doc.id].percent:0)+'%'"></div>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="doc.status!=='processing'">
+                    <span>
+                      <span x-text="doc.pages_ocred+' / '+doc.num_pages"></span>
+                      <span x-show="doc.verified_count>0" class="text-emerald-400 text-xs ml-1"
+                            :title="doc.verified_count+' page(s) verified'"
+                            x-text="'· ✓'+doc.verified_count"></span>
+                    </span>
+                  </template>
+                </td>
+                <td class="px-4 py-3">
+                  <span x-show="doc.avg_confidence>0"
+                        :class="confClass(doc.avg_confidence)"
+                        class="px-2 py-0.5 rounded-full text-xs font-medium"
+                        x-text="Math.round(doc.avg_confidence*100)+'%'"></span>
+                  <span x-show="doc.avg_confidence<=0" class="text-slate-600">—</span>
+                </td>
+                <td class="px-4 py-3">
+                  <span :class="{
+                          'text-amber-400': doc.status==='pending',
+                          'text-emerald-400': doc.status==='completed',
+                          'text-sky-400': doc.status==='processing',
+                          'text-red-400': doc.status==='failed'}"
+                        class="capitalize" x-text="doc.status"></span>
+                </td>
+                <td class="px-4 py-3 text-slate-400 whitespace-nowrap" x-text="dateFmt(doc.date_added)"></td>
+                <td class="px-4 py-3 text-right whitespace-nowrap space-x-2">
+                  <button x-show="doc.status==='pending'" @click="startExisting(doc)"
+                          class="text-emerald-400 hover:text-emerald-300">Run</button>
+                  <a x-show="doc.status==='completed'" :href="'/documents/'+doc.id"
+                     class="text-sky-400 hover:text-sky-300">Open</a>
+                  <a x-show="doc.status==='completed'" :href="'/api/documents/'+doc.id+'/export'"
+                     class="text-slate-300 hover:text-white">DOCX</a>
+                  <a x-show="doc.status==='completed'" :href="'/api/documents/'+doc.id+'/export.txt'"
+                     class="text-slate-300 hover:text-white">TXT</a>
+                  <button @click="del(doc)" class="text-red-400 hover:text-red-300">Delete</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="filtered.length===0">
+              <td colspan="8" class="px-4 py-10 text-center text-slate-500"
+                  x-text="search ? 'No documents match your search.' : 'No documents yet. Upload a PDF to begin.'"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <style>[x-cloak]{display:none!important}</style>
+  <script>
+    function dashboard() {
+      return {
+        documents: [], dragging: false, uploading: false,
+        estimate: null, pendingDoc: null, prog: {}, sockets: {}, search: '',
+
+        get filtered() {
+          const q = this.search.trim().toLowerCase();
+          if (!q) return this.documents;
+          return this.documents.filter(d =>
+            (d.title || '').toLowerCase().includes(q) ||
+            (d.author || '').toLowerCase().includes(q));
+        },
+
+        async init() {
+          await this.refresh();
+          // attach progress sockets for anything already processing
+          this.documents.filter(d => d.status === 'processing').forEach(d => this.listen(d.id));
+        },
+        async refresh() {
+          const r = await fetch('/api/documents');
+          if (r.status === 401) { location.href = '/login'; return; }
+          this.documents = (await r.json()).documents;
+        },
+        fmt(n) { return (n || 0).toLocaleString(); },
+        dateFmt(s) { return s ? new Date(s).toLocaleString() : '—'; },
+        etaFmt(sec) {
+          if (sec == null) return '';
+          const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+          return 'ETA ' + (m > 0 ? m + 'm ' : '') + s + 's';
+        },
+        confClass(c) {
+          if (c >= 0.85) return 'bg-emerald-500/20 text-emerald-300';
+          if (c >= 0.6) return 'bg-amber-500/20 text-amber-300';
+          return 'bg-red-500/20 text-red-300';
+        },
+
+        onPick(e) { if (e.target.files.length) this.upload(e.target.files[0]); },
+        onDrop(e) { this.dragging = false; if (e.dataTransfer.files.length) this.upload(e.dataTransfer.files[0]); },
+
+        async upload(file) {
+          if (file.type !== 'application/pdf') { alert('PDF files only.'); return; }
+          this.uploading = true;
+          const fd = new FormData(); fd.append('file', file);
+          try {
+            const r = await fetch('/api/upload', { method: 'POST', body: fd });
+            if (!r.ok) { alert('Upload failed: ' + (await r.text())); return; }
+            const data = await r.json();
+            this.pendingDoc = data.document;
+            this.estimate = data.estimate;
+            await this.refresh();
+          } finally { this.uploading = false; }
+        },
+        cancelEstimate() { this.estimate = null; this.pendingDoc = null; },
+        async confirmRun() {
+          const id = this.pendingDoc.id;
+          this.estimate = null; this.pendingDoc = null;
+          await this.startProcessing(id);
+        },
+        async startExisting(doc) { await this.startProcessing(doc.id); },
+        async startProcessing(id) {
+          const r = await fetch('/api/documents/' + id + '/start', { method: 'POST' });
+          if (!r.ok) { alert('Could not start: ' + (await r.text())); return; }
+          await this.refresh();
+          this.listen(id);
+        },
+
+        listen(id) {
+          if (this.sockets[id]) return;
+          const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+          const ws = new WebSocket(`${proto}://${location.host}/ws/documents/${id}/progress`);
+          this.sockets[id] = ws;
+          ws.onmessage = (ev) => {
+            const m = JSON.parse(ev.data);
+            if (m.type === 'progress' || m.type === 'start') {
+              this.prog[id] = Object.assign({}, this.prog[id], m);
+            } else if (m.type === 'complete' || m.type === 'error') {
+              ws.close(); delete this.sockets[id];
+              this.refresh();
+            }
+          };
+          ws.onclose = () => { delete this.sockets[id]; };
+        },
+
+        async saveField(doc, field, value) {
+          const body = {}; body[field] = value;
+          await fetch('/api/documents/' + doc.id, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          doc[field] = value;
+        },
+        async del(doc) {
+          if (!confirm('Delete "' + doc.title + '"? This cannot be undone.')) return;
+          await fetch('/api/documents/' + doc.id, { method: 'DELETE' });
+          this.refresh();
+        },
+      };
+    }
+  </script>
+</body>
+</html>
