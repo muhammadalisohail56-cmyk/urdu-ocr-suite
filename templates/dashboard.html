@@ -58,8 +58,8 @@
           <div class="space-y-3">
             <template x-for="(m, name) in estimate.models" :key="name">
               <label class="flex items-center gap-4 p-4 rounded-xl border cursor-pointer transition"
-                     :class="chosenModel===name ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 bg-slate-900 hover:border-slate-600'">
-                <input type="radio" :value="name" x-model="chosenModel" class="accent-emerald-500" />
+                     :class="chosenModels.includes(name) ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 bg-slate-900 hover:border-slate-600'">
+                <input type="checkbox" :value="name" x-model="chosenModels" class="accent-emerald-500 w-4 h-4" />
                 <div class="flex-1">
                   <div class="font-semibold" x-text="m.label"></div>
                   <div class="text-xs text-slate-400" x-text="name"></div>
@@ -68,8 +68,8 @@
                   <div class="text-xl font-bold text-emerald-400" x-text="'$'+m.est_cost_usd"></div>
                   <div class="text-xs text-slate-400">~<span x-text="m.est_time"></span> · <span x-text="fmt(m.total_tokens)"></span> tok</div>
                 </div>
-                <span x-show="name===estimate.recommended"
-                      class="text-[10px] uppercase tracking-wide bg-emerald-600/30 text-emerald-300 px-2 py-0.5 rounded-full">Recommended</span>
+                <span x-show="name.includes('gemini')"
+                      class="text-[10px] uppercase tracking-wide bg-emerald-600/30 text-emerald-300 px-2 py-0.5 rounded-full">Default Extractors</span>
               </label>
             </template>
             <p class="text-xs text-slate-500">
@@ -80,9 +80,9 @@
 
         <div class="flex justify-end gap-3 pt-2">
           <button @click="cancelEstimate()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600">Cancel</button>
-          <button @click="confirmRun()" :disabled="!chosenModel"
+          <button @click="confirmRun()" :disabled="chosenModels.length === 0"
                   class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold disabled:opacity-50">
-            Start OCR with <span x-text="shortModel(chosenModel)"></span>
+            Start OCR with <span x-text="chosenModels.length"></span> agent(s)
           </button>
         </div>
       </div>
@@ -195,7 +195,7 @@
     function dashboard() {
       return {
         documents: [], dragging: false, uploading: false,
-        estimate: null, pendingDoc: null, chosenModel: '', prog: {}, sockets: {}, search: '',
+        estimate: null, pendingDoc: null, chosenModels: [], prog: {}, sockets: {}, search: '',
 
         get filtered() {
           const q = this.search.trim().toLowerCase();
@@ -241,22 +241,23 @@
             const data = await r.json();
             this.pendingDoc = data.document;
             this.estimate = data.estimate;
-            this.chosenModel = data.estimate.recommended;  // default to recommended
+            // Select up to 2 models by default
+            this.chosenModels = Object.keys(data.estimate.models).slice(0, 2);
             await this.refresh();
           } finally { this.uploading = false; }
         },
-        cancelEstimate() { this.estimate = null; this.pendingDoc = null; this.chosenModel = ''; },
+        cancelEstimate() { this.estimate = null; this.pendingDoc = null; this.chosenModels = []; },
         shortModel(m) { return (m || '').replace('gemini-2.5-', '') || '…'; },
         async confirmRun() {
-          const id = this.pendingDoc.id, model = this.chosenModel;
+          const id = this.pendingDoc.id, models = this.chosenModels;
           this.estimate = null; this.pendingDoc = null;
-          await this.startProcessing(id, model);
+          await this.startProcessing(id, models);
         },
-        async startExisting(doc) { await this.startProcessing(doc.id, doc.model); },
-        async startProcessing(id, model) {
+        async startExisting(doc) { await this.startProcessing(doc.id, JSON.parse(doc.selected_agents || '[]')); },
+        async startProcessing(id, models) {
           const r = await fetch('/api/documents/' + id + '/start', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(model ? { model } : {}),
+            body: JSON.stringify({ models }),
           });
           if (!r.ok) { alert('Could not start: ' + (await r.text())); return; }
           await this.refresh();

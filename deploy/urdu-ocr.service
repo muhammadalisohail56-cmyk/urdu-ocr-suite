@@ -1,0 +1,26 @@
+[Unit]
+# systemd service for the Urdu OCR Suite (FastAPI/uvicorn).
+# Install: see deploy/DEPLOY.md. Copy to /etc/systemd/system/urdu-ocr.service
+Description=Urdu OCR Suite (FastAPI/uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The Linux user that owns the cloned repo. Created in DEPLOY.md as "ocr".
+User=ocr
+Group=ocr
+# Absolute path to the cloned repo.
+WorkingDirectory=/home/ocr/urdu-ocr-suite
+# Loads GEMINI_API_KEY, SESSION_SECRET, etc. from the repo .env (chmod 600).
+EnvironmentFile=/home/ocr/urdu-ocr-suite/.env
+# Bind to localhost only; Caddy terminates TLS and reverse-proxies to this.
+ExecStart=/home/ocr/urdu-ocr-suite/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+# Basic hardening.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -44,8 +44,15 @@ def init_db() -> None:
 # Tiny additive "migration": create_all won't add columns to pre-existing tables,
 # so add any new ones here. (For anything more complex, use Alembic.)
 _EXPECTED_COLUMNS = {
-    "pages": {"verified": "BOOLEAN NOT NULL DEFAULT 0"},
-    "documents": {"model": "VARCHAR NOT NULL DEFAULT 'gemini-2.5-flash'"},
+    "pages": {
+        "verified": "BOOLEAN NOT NULL DEFAULT 0",
+        "tokens_json": "TEXT NOT NULL DEFAULT '[]'",
+        "agent_logs": "TEXT NOT NULL DEFAULT '{}'"
+    },
+    "documents": {
+        "model": "VARCHAR NOT NULL DEFAULT 'gemini-2.5-flash'",
+        "selected_agents": "TEXT NOT NULL DEFAULT '[]'"
+    },
 }
 
 

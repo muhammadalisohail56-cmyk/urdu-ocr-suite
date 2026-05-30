@@ -86,10 +86,8 @@ hub = ProgressHub()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    if GEMINI_API_KEY:
-        ocr_pipeline.configure(GEMINI_API_KEY)
-    else:
-        logger.warning("GEMINI_API_KEY not set — OCR runs will fail.")
+    if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY not set — Gemini OCR runs will fail.")
     creds = auth._load_credentials()
     logger.info("Auth configured for %d user(s): %s", len(creds), ", ".join(creds) or "(none!)")
 
@@ -220,12 +218,9 @@ async def upload(
     # Pre-flight estimate across all selectable models.
     estimate = await run_in_threadpool(ocr_pipeline.estimate_usage, pdf_path)
     doc.num_pages = estimate["num_pages"]
-    rec = estimate["recommended"]
-    rec_m = estimate["models"][rec]
-    doc.model = rec
-    doc.est_input_tokens = rec_m["input_tokens"]
-    doc.est_output_tokens = rec_m["output_tokens"]
-    doc.est_cost_usd = rec_m["est_cost_usd"]
+    
+    # We no longer calculate a single total est_cost_usd here, since it depends on
+    # which agents the user selects. The UI will sum them.
     db.commit()
     db.refresh(doc)
 
@@ -244,16 +239,24 @@ async def start_processing(doc_id: int, payload: dict = Body(default={}),
     if not GEMINI_API_KEY:
         raise HTTPException(503, "GEMINI_API_KEY not configured.")
 
-    # Apply the user's model choice for this run + refresh the cost/output est.
-    model = payload.get("model") or doc.model or ocr_pipeline.RECOMMENDED_MODEL
-    if model not in ocr_pipeline.MODEL_PRICING:
-        raise HTTPException(400, f"Unknown model '{model}'.")
-    doc.model = model
-    p = ocr_pipeline.MODEL_PRICING[model]
-    calls = 1 if ocr_pipeline.GEMINI_ONLY else 2
-    out_tok = p["out_tokens_per_page"] * doc.num_pages * calls
-    doc.est_output_tokens = out_tok
-    doc.est_cost_usd = round(doc.est_input_tokens / 1e6 * p["in"] + out_tok / 1e6 * p["out"], 4)
+    selected_models = payload.get("models", [])
+    if not selected_models:
+        raise HTTPException(400, "You must select at least one OCR model.")
+    
+    total_cost = 0.0
+    for m in selected_models:
+        if m not in ocr_pipeline.MODEL_PRICING:
+            raise HTTPException(400, f"Unknown model '{m}'.")
+        p = ocr_pipeline.MODEL_PRICING[m]
+        # Rough re-calculation based on pages
+        # (Properly we should re-run estimate_usage or accept the UI's calculation)
+        in_tok = 258 + 100 # rough per page
+        out_tok = p["out_tokens_per_page"]
+        total_cost += (in_tok / 1e6 * p["in"] + out_tok / 1e6 * p["out"]) * doc.num_pages
+        
+    import json
+    doc.selected_agents = json.dumps(selected_models)
+    doc.est_cost_usd = round(total_cost, 4)
 
     doc.status = STATUS_PROCESSING
     doc.pages_ocred = 0
@@ -279,10 +282,11 @@ async def _process_document(doc_id: int) -> None:
             return
         num_pages = doc.num_pages
         pdf_path = doc.pdf_path
-        model_name = doc.model
+        import json
+        selected_models = json.loads(doc.selected_agents)
         img_subdir = os.path.join(IMAGE_DIR, str(doc_id))
         os.makedirs(img_subdir, exist_ok=True)
-
+        
         start = time.time()
         await hub.publish(doc_id, {"type": "start", "num_pages": num_pages})
 
@@ -292,13 +296,14 @@ async def _process_document(doc_id: int) -> None:
             img_path = os.path.join(img_subdir, f"{page_no}.png")
             await run_in_threadpool(image.save, img_path)
 
-            result = await run_in_threadpool(ocr_pipeline.transcribe_page, image, model_name)
+            # Await the multi-agent OCR directly (it's fully async)
+            result = await ocr_pipeline.transcribe_page_multi_agent(image, selected_models)
 
             page = Page(
                 document_id=doc_id, page_number=page_no, image_path=img_path,
                 text=result["text"], confidence=result["confidence"],
-                notes=result["notes"], utrnet_text=result["utrnet_text"],
-                gemini_text=result["gemini_text"],
+                notes=result["notes"], tokens_json=result["tokens_json"],
+                agent_logs=result["agent_logs"],
             )
             db.add(page)
             doc.pages_ocred = page_no
@@ -415,19 +420,22 @@ async def rerun_page(page_id: int, user: str = Depends(require_user),
         raise HTTPException(503, "GEMINI_API_KEY not configured.")
     doc = db.get(Document, page.document_id)
 
+    import json
+    selected_models = json.loads(doc.selected_agents)
+    
     image = await run_in_threadpool(ocr_pipeline.render_page, doc.pdf_path, page.page_number - 1)
     img_subdir = os.path.join(IMAGE_DIR, str(doc.id))
     os.makedirs(img_subdir, exist_ok=True)
     img_path = os.path.join(img_subdir, f"{page.page_number}.png")
     await run_in_threadpool(image.save, img_path)
 
-    result = await run_in_threadpool(ocr_pipeline.transcribe_page, image, doc.model)
+    result = await ocr_pipeline.transcribe_page_multi_agent(image, selected_models)
     page.image_path = img_path
     page.text = result["text"]
     page.confidence = result["confidence"]
     page.notes = result["notes"]
-    page.utrnet_text = result["utrnet_text"]
-    page.gemini_text = result["gemini_text"]
+    page.tokens_json = result["tokens_json"]
+    page.agent_logs = result["agent_logs"]
     page.verified = False  # re-run supersedes any prior human verification
     db.commit()
     return page.to_dict()
@@ -542,7 +550,7 @@ async def ws_progress(websocket: WebSocket, doc_id: int):
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "gemini_configured": bool(GEMINI_API_KEY),
-            "mode": "gemini-only" if ocr_pipeline.GEMINI_ONLY else "hybrid"}
+            "mode": "multi-agent"}
 
 
 if __name__ == "__main__":

@@ -37,7 +37,8 @@ class Document(Base):
     pages_ocred = Column(Integer, nullable=False, default=0)
     status = Column(String, nullable=False, default=STATUS_PENDING)
     error = Column(Text, nullable=False, default="")
-    model = Column(String, nullable=False, default="gemini-2.5-flash")  # model used for this run
+    model = Column(String, nullable=False, default="gemini-2.5-flash")  # primary judge/model
+    selected_agents = Column(Text, nullable=False, default="[]") # JSON list of extractors
 
     # Pre-flight token/cost estimate (computed at upload).
     est_input_tokens = Column(Integer, nullable=False, default=0)
@@ -92,8 +93,8 @@ class Page(Base):
     text = Column(Text, nullable=False, default="")          # editable reconciled text
     confidence = Column(Float, nullable=False, default=0.0)
     notes = Column(Text, nullable=False, default="")         # reconciliation / model notes
-    utrnet_text = Column(Text, nullable=False, default="")
-    gemini_text = Column(Text, nullable=False, default="")
+    tokens_json = Column(Text, nullable=False, default="[]") # Rich token array with per-word confidence
+    agent_logs = Column(Text, nullable=False, default="{}")  # Raw outputs from all agents
     verified = Column(Boolean, nullable=False, default=False)  # human-proofread flag
 
     document = relationship("Document", back_populates="pages")

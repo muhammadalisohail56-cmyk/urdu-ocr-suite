@@ -1,0 +1,15 @@
+# Caddy reverse proxy + automatic HTTPS (Let's Encrypt) for the Urdu OCR Suite.
+# Replace YOUR-SUBDOMAIN with your DuckDNS name, then install per deploy/DEPLOY.md.
+# Caddy obtains and renews the TLS certificate automatically once DNS points here.
+
+your-subdomain.duckdns.org {
+	# Proxy all traffic to the uvicorn app running on localhost.
+	reverse_proxy 127.0.0.1:8000
+
+	# Allow large PDF uploads (default Caddy limit is generous, but be explicit).
+	request_body {
+		max_size 100MB
+	}
+
+	encode gzip
+}

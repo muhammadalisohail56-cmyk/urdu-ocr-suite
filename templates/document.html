@@ -77,23 +77,58 @@
         <p x-show="!current" class="text-slate-600 m-auto">No page</p>
       </div>
       <!-- Right: editable reconciled text -->
-      <div class="bg-slate-950 rounded-xl border border-slate-800 flex flex-col">
+      <div class="bg-slate-950 rounded-xl border border-slate-800 flex flex-col relative overflow-hidden">
         <div class="px-4 py-2 border-b border-slate-800 text-xs text-slate-500 flex justify-between">
-          <span>Reconciled Urdu text — editable</span>
+          <span>Reconciled Urdu text — editable (click any word)</span>
           <span x-show="current && current.notes" x-text="current?.notes" class="italic truncate max-w-md"></span>
         </div>
-        <textarea x-show="current" x-model="text" @input="queueSave()"
-                  class="urdu flex-1 w-full bg-transparent p-6 text-xl resize-none focus:outline-none"
-                  spellcheck="false"></textarea>
+        
+        <!-- Word-level renderer -->
+        <div class="flex-1 w-full p-6 overflow-y-auto urdu leading-loose space-y-2 text-xl" x-show="current">
+            <template x-if="tokens.length === 0">
+                <div class="text-slate-500 text-sm font-sans text-center mt-10">No tokens found or still processing.</div>
+            </template>
+            <div class="flex flex-wrap gap-y-3 gap-x-1 content-start" dir="rtl">
+                <template x-for="(token, index) in tokens" :key="index">
+                    <span contenteditable="true" spellcheck="false"
+                          @mouseenter="showTooltip($event, token)"
+                          @mouseleave="hideTooltip()"
+                          @blur="updateToken(index, $event.target.innerText)"
+                          class="px-1.5 py-0.5 rounded outline-none focus:ring-2 focus:ring-emerald-500 transition-colors"
+                          :class="tokenConfClass(token.confidence)"
+                          x-text="token.text"></span>
+                </template>
+            </div>
+        </div>
       </div>
+    </div>
+
+    <!-- Floating Tooltip for Agent Votes -->
+    <div x-show="hoveredToken" x-transition.opacity.duration.200ms
+         class="fixed z-50 bg-slate-900 border border-slate-700 p-3 rounded-xl shadow-2xl pointer-events-none w-max min-w-[200px]"
+         :style="`left: ${mouseX}px; top: ${mouseY - 15}px; transform: translate(-50%, -100%)`">
+        <div class="text-xs text-amber-400 font-semibold mb-2 pb-2 border-b border-slate-800"
+             x-show="hoveredToken?.rationale" x-text="hoveredToken?.rationale"></div>
+        
+        <div class="space-y-1.5">
+            <template x-for="(vote, agent) in hoveredToken?.votes || {}" :key="agent">
+                <div class="flex justify-between items-center gap-6">
+                    <span class="text-slate-400 capitalize text-xs" x-text="agent"></span>
+                    <span class="text-white urdu text-sm" x-text="vote"></span>
+                </div>
+            </template>
+        </div>
     </div>
   </main>
 
   <script>
     function workspace(docId) {
       return {
-        docId, doc: null, pages: [], idx: 0, text: '',
+        docId, doc: null, pages: [], idx: 0,
+        tokens: [], text: '',
         saving: false, saved: false, rerunning: false, copied: false, imgKey: Date.now(), _t: null,
+        
+        hoveredToken: null, mouseX: 0, mouseY: 0,
 
         get current() { return this.pages[this.idx] || null; },
         get verifiedCount() { return this.pages.filter(p => p.verified).length; },
@@ -106,20 +141,60 @@
           this.pages = this.doc.pages || [];
           this.load();
           window.addEventListener('keydown', (e) => {
-            if (e.target.tagName === 'TEXTAREA') return;
+            if (e.target.tagName === 'SPAN' && e.target.isContentEditable) return;
             if (e.key === 'ArrowLeft') this.next();   // RTL: left advances
             if (e.key === 'ArrowRight') this.prev();
           });
         },
-        load() { this.text = this.current ? this.current.text : ''; this.saved = false; },
-        prev() { if (this.idx > 0) { this.flush(); this.idx--; this.load(); } },
-        next() { if (this.idx < this.pages.length - 1) { this.flush(); this.idx++; this.load(); } },
+        load() { 
+            if (this.current) {
+                this.text = this.current.text;
+                try {
+                    this.tokens = JSON.parse(this.current.tokens_json || '[]');
+                } catch(e) {
+                    this.tokens = [];
+                }
+            } else {
+                this.text = '';
+                this.tokens = [];
+            }
+            this.saved = false; 
+        },
+        prev() { if (this.idx > 0) { this.idx--; this.load(); } },
+        next() { if (this.idx < this.pages.length - 1) { this.idx++; this.load(); } },
 
         confClass(c) {
           if (c == null) return 'bg-slate-700 text-slate-300';
           if (c >= 0.85) return 'bg-emerald-500/25 text-emerald-300';
           if (c >= 0.6) return 'bg-amber-500/25 text-amber-300';
           return 'bg-red-500/25 text-red-300';
+        },
+        
+        tokenConfClass(c) {
+          if (c == null) return 'text-slate-300';
+          if (c >= 0.85) return 'text-emerald-400 hover:bg-slate-800';
+          if (c >= 0.6) return 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30';
+          return 'bg-red-500/30 text-red-300 font-bold hover:bg-red-500/40';
+        },
+
+        showTooltip(e, token) {
+            if (token.confidence >= 0.85 && !token.rationale) return; // Only show tooltip for uncertain or edited tokens
+            this.hoveredToken = token;
+            this.mouseX = e.clientX;
+            this.mouseY = e.clientY;
+        },
+        hideTooltip() {
+            this.hoveredToken = null;
+        },
+        
+        updateToken(index, newText) {
+            newText = newText.trim();
+            if (this.tokens[index].text !== newText) {
+                this.tokens[index].text = newText;
+                this.tokens[index].confidence = 1.0; // Manual edit means we are now confident
+                this.tokens[index].rationale = "Manually corrected";
+                this.queueSave();
+            }
         },
 
         queueSave() {
@@ -129,15 +204,22 @@
         },
         async flush() {
           if (!this.current) return;
-          if (this.text === this.current.text) return;
           this.saving = true;
-          const id = this.current.id;
-          const body = JSON.stringify({ text: this.text });
-          const r = await fetch('/api/pages/' + id, {
+          
+          // rebuild full text from tokens
+          const rebuiltText = this.tokens.map(t => t.text).join(' ');
+          this.current.text = rebuiltText;
+          
+          const body = JSON.stringify({ 
+              text: rebuiltText,
+              tokens_json: JSON.stringify(this.tokens)
+          });
+          
+          const r = await fetch('/api/pages/' + this.current.id, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body,
           });
           this.saving = false;
-          if (r.ok) { this.current.text = this.text; this.saved = true; }
+          if (r.ok) { this.saved = true; }
         },
 
         async toggleVerified(v) {
@@ -159,7 +241,7 @@
             if (!r.ok) { alert('Re-run failed: ' + (await r.text())); return; }
             const updated = await r.json();
             Object.assign(this.current, updated);
-            this.text = updated.text;
+            this.load(); // Refresh tokens from JSON
             this.imgKey = Date.now();  // bust the cached (re-rendered) image
           } finally { this.rerunning = false; }
         },
@@ -179,7 +261,7 @@
 
         async copyText() {
           try {
-            await navigator.clipboard.writeText(this.text || '');
+            await navigator.clipboard.writeText(this.tokens.map(t=>t.text).join(' ') || '');
             this.copied = true; setTimeout(() => this.copied = false, 1500);
           } catch (e) { alert('Copy failed — your browser blocked clipboard access.'); }
         },
