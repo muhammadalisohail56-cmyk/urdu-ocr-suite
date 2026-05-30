@@ -45,6 +45,7 @@ def init_db() -> None:
 # so add any new ones here. (For anything more complex, use Alembic.)
 _EXPECTED_COLUMNS = {
     "pages": {"verified": "BOOLEAN NOT NULL DEFAULT 0"},
+    "documents": {"model": "VARCHAR NOT NULL DEFAULT 'gemini-2.5-flash'"},
 }
 
 

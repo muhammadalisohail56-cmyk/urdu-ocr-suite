@@ -28,16 +28,34 @@ import google.generativeai as genai
 
 logger = logging.getLogger("ocr-pipeline")
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+# Fallback model when a run doesn't specify one. Defaulted to Flash after a
+# cost review: Pro's heavy "thinking" tokens (billed as output at $10/1M)
+# dominated real billing and far exceeded estimates. The user picks per-run.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_ONLY = os.getenv("GEMINI_ONLY", "1").strip().lower() not in ("0", "false", "no", "off")
 PDF_RENDER_DPI = int(os.getenv("PDF_RENDER_DPI", "200"))
 
-# Token/cost model (gemini-2.5-pro, ≤200k context). Edit if rates change.
-RATE_INPUT_PER_M = float(os.getenv("RATE_INPUT_PER_M", "1.25"))
-RATE_OUTPUT_PER_M = float(os.getenv("RATE_OUTPUT_PER_M", "10.0"))
+# Robustness: cap each Gemini call so a hung request can't freeze a run forever.
+GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "120"))
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
+
 IMAGE_TOKENS_PER_TILE = 258
-PROMPT_TOKENS = 90                         # rough fixed prompt overhead per call
-EST_OUTPUT_TOKENS_PER_PAGE = int(os.getenv("EST_OUTPUT_TOKENS_PER_PAGE", "1200"))
+PROMPT_TOKENS = 90  # rough fixed prompt overhead per call
+
+# Per-model pricing ($/1M tokens) + rough per-page estimates that drive the
+# pre-flight "expected usage" panel the user sees before starting a run.
+#   out_tokens_per_page bakes in typical reasoning/thinking volume — Pro thinks
+#   a lot, which is what made it expensive; sec_per_page is a rough throughput
+#   figure for the time projection. Tune these from real billing over time.
+MODEL_PRICING = {
+    "gemini-2.5-pro":        {"in": 1.25, "out": 10.0, "out_tokens_per_page": 3000,
+                              "sec_per_page": 60, "label": "Pro — most accurate, priciest"},
+    "gemini-2.5-flash":      {"in": 0.30, "out": 2.50, "out_tokens_per_page": 1200,
+                              "sec_per_page": 12, "label": "Flash — balanced (recommended)"},
+    "gemini-2.5-flash-lite": {"in": 0.10, "out": 0.40, "out_tokens_per_page": 900,
+                              "sec_per_page": 6,  "label": "Flash-Lite — cheapest"},
+}
+RECOMMENDED_MODEL = os.getenv("RECOMMENDED_MODEL", "gemini-2.5-flash")
 
 _configured = False
 
@@ -111,34 +129,57 @@ def _image_tokens(width: int, height: int) -> int:
     return tiles * IMAGE_TOKENS_PER_TILE
 
 
-def estimate_usage(pdf_path: str) -> dict:
-    """Pre-flight estimate of Gemini token usage + cost for the whole PDF.
+def _human_time(seconds: float) -> str:
+    seconds = int(seconds)
+    m, s = divmod(seconds, 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h}h {m}m"
+    return f"{m}m {s}s" if m else f"{s}s"
 
-    Accounts for the active mode: hybrid issues TWO Gemini calls per page
-    (transcribe + reconcile), Gemini-only issues one."""
+
+def estimate_usage(pdf_path: str) -> dict:
+    """Pre-flight estimate of Gemini usage for EVERY selectable model, so the
+    user can compare cost + time before starting a run.
+
+    Hybrid mode issues two Gemini calls per page (transcribe + reconcile);
+    Gemini-only issues one. Image input tokens are identical across models; only
+    output-token volume and per-token price differ."""
     dims = page_dimensions(pdf_path)
+    n = len(dims)
     calls_per_page = 1 if GEMINI_ONLY else 2
 
+    # Input tokens (same for every model).
     input_tokens = 0
     for (w, h) in dims:
         img_tok = _image_tokens(w, h)
-        # reconcile call also re-sends the image plus both transcriptions
         per_page_in = img_tok + PROMPT_TOKENS
         if not GEMINI_ONLY:
-            per_page_in += img_tok + PROMPT_TOKENS + 2 * EST_OUTPUT_TOKENS_PER_PAGE
+            # reconcile call re-sends the image + both transcriptions
+            per_page_in += img_tok + PROMPT_TOKENS + 2 * 1200
         input_tokens += per_page_in
 
-    output_tokens = EST_OUTPUT_TOKENS_PER_PAGE * len(dims) * calls_per_page
-    cost = input_tokens / 1e6 * RATE_INPUT_PER_M + output_tokens / 1e6 * RATE_OUTPUT_PER_M
+    models = {}
+    for name, p in MODEL_PRICING.items():
+        output_tokens = p["out_tokens_per_page"] * n * calls_per_page
+        cost = input_tokens / 1e6 * p["in"] + output_tokens / 1e6 * p["out"]
+        secs = p["sec_per_page"] * n * calls_per_page
+        models[name] = {
+            "label": p["label"],
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+            "total_tokens": int(input_tokens + output_tokens),
+            "est_cost_usd": round(cost, 4),
+            "est_seconds": int(secs),
+            "est_time": _human_time(secs),
+        }
+
     return {
-        "num_pages": len(dims),
+        "num_pages": n,
         "mode": "gemini-only" if GEMINI_ONLY else "hybrid",
         "calls_per_page": calls_per_page,
-        "model": GEMINI_MODEL,
-        "input_tokens": int(input_tokens),
-        "output_tokens": int(output_tokens),
-        "total_tokens": int(input_tokens + output_tokens),
-        "est_cost_usd": round(cost, 4),
+        "recommended": RECOMMENDED_MODEL,
+        "models": models,
     }
 
 
@@ -162,13 +203,33 @@ def _parse_json(raw: str, text_key: str, fallback: str) -> dict:
                 "notes": "Model output was not structured JSON."}
 
 
+# --- Generation with timeout + retry ---------------------------------------- #
+def _generate(model, parts):
+    """Call Gemini with a per-request timeout and a few retries, so a hung or
+    transient call fails the page cleanly instead of freezing the whole run."""
+    last_exc = None
+    for attempt in range(GEMINI_MAX_RETRIES + 1):
+        try:
+            return model.generate_content(
+                parts, request_options={"timeout": GEMINI_TIMEOUT_SECONDS}
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning("Gemini call failed (attempt %d/%d): %s",
+                           attempt + 1, GEMINI_MAX_RETRIES + 1, exc)
+    raise RuntimeError(
+        f"Gemini call failed after {GEMINI_MAX_RETRIES + 1} attempts: {last_exc}"
+    )
+
+
 # --- Per-page transcription ------------------------------------------------- #
-def transcribe_page(image: Image.Image) -> dict:
-    """Transcribe one page image. Returns
+def transcribe_page(image: Image.Image, model_name: str | None = None) -> dict:
+    """Transcribe one page image with the chosen model. Returns
     {text, confidence, notes, utrnet_text, gemini_text}."""
+    model_name = model_name or GEMINI_MODEL
     if GEMINI_ONLY:
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        resp = model.generate_content([GEMINI_ONLY_PROMPT, image])
+        model = genai.GenerativeModel(model_name)
+        resp = _generate(model, [GEMINI_ONLY_PROMPT, image])
         parsed = _parse_json(resp.text or "", "text", fallback="")
         return {
             "text": parsed["text"],
@@ -187,10 +248,10 @@ def transcribe_page(image: Image.Image) -> dict:
             "is not installed. Run `pip install -r requirements-hybrid.txt`, or "
             "set GEMINI_ONLY=1 to use the lean Gemini-only mode."
         ) from exc
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    model = genai.GenerativeModel(model_name)
 
     utr = run_utrnet_page(image)
-    gem_resp = model.generate_content([TRANSCRIBE_PROMPT, image])
+    gem_resp = _generate(model, [TRANSCRIBE_PROMPT, image])
     gemini_text = (gem_resp.text or "").strip()
 
     if not utr["text"]:
@@ -199,7 +260,7 @@ def transcribe_page(image: Image.Image) -> dict:
                 "gemini_text": gemini_text}
 
     prompt = RECONCILE_PROMPT.format(utrnet_text=utr["text"], gemini_text=gemini_text or "(none)")
-    rec_resp = model.generate_content([prompt, image])
+    rec_resp = _generate(model, [prompt, image])
     parsed = _parse_json(rec_resp.text or "", "reconciled_text", fallback=gemini_text)
     # Blend UTRNet CTC confidence with Gemini's reported reconciliation confidence.
     blended = round((utr.get("confidence", 0.0) + parsed["confidence"]) / 2, 3)

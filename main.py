@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Dict, Set, Optional
 
 from dotenv import load_dotenv
-from fastapi import (FastAPI, Request, UploadFile, File, Form, Depends,
+from fastapi import (FastAPI, Request, UploadFile, File, Form, Body, Depends,
                      HTTPException, WebSocket, WebSocketDisconnect)
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -92,6 +92,20 @@ async def lifespan(app: FastAPI):
         logger.warning("GEMINI_API_KEY not set — OCR runs will fail.")
     creds = auth._load_credentials()
     logger.info("Auth configured for %d user(s): %s", len(creds), ", ".join(creds) or "(none!)")
+
+    # Orphan recovery: any doc left 'processing' means a previous run was
+    # interrupted (restart/crash). Mark it failed so it can be re-run.
+    db = SessionLocal()
+    try:
+        stuck = db.query(Document).filter(Document.status == STATUS_PROCESSING).all()
+        for d in stuck:
+            d.status = STATUS_FAILED
+            d.error = "Interrupted by a server restart — re-run to retry."
+        if stuck:
+            db.commit()
+            logger.info("Reset %d interrupted document(s) to 'failed'.", len(stuck))
+    finally:
+        db.close()
     yield
 
 
@@ -203,12 +217,15 @@ async def upload(
         fh.write(raw)
     doc.pdf_path = pdf_path
 
-    # Pre-flight estimate.
+    # Pre-flight estimate across all selectable models.
     estimate = await run_in_threadpool(ocr_pipeline.estimate_usage, pdf_path)
     doc.num_pages = estimate["num_pages"]
-    doc.est_input_tokens = estimate["input_tokens"]
-    doc.est_output_tokens = estimate["output_tokens"]
-    doc.est_cost_usd = estimate["est_cost_usd"]
+    rec = estimate["recommended"]
+    rec_m = estimate["models"][rec]
+    doc.model = rec
+    doc.est_input_tokens = rec_m["input_tokens"]
+    doc.est_output_tokens = rec_m["output_tokens"]
+    doc.est_cost_usd = rec_m["est_cost_usd"]
     db.commit()
     db.refresh(doc)
 
@@ -216,7 +233,8 @@ async def upload(
 
 
 @app.post("/api/documents/{doc_id}/start")
-async def start_processing(doc_id: int, user: str = Depends(require_user),
+async def start_processing(doc_id: int, payload: dict = Body(default={}),
+                           user: str = Depends(require_user),
                            db: Session = Depends(get_db)):
     doc = db.get(Document, doc_id)
     if not doc:
@@ -225,6 +243,17 @@ async def start_processing(doc_id: int, user: str = Depends(require_user),
         raise HTTPException(409, "Already processing.")
     if not GEMINI_API_KEY:
         raise HTTPException(503, "GEMINI_API_KEY not configured.")
+
+    # Apply the user's model choice for this run + refresh the cost/output est.
+    model = payload.get("model") or doc.model or ocr_pipeline.RECOMMENDED_MODEL
+    if model not in ocr_pipeline.MODEL_PRICING:
+        raise HTTPException(400, f"Unknown model '{model}'.")
+    doc.model = model
+    p = ocr_pipeline.MODEL_PRICING[model]
+    calls = 1 if ocr_pipeline.GEMINI_ONLY else 2
+    out_tok = p["out_tokens_per_page"] * doc.num_pages * calls
+    doc.est_output_tokens = out_tok
+    doc.est_cost_usd = round(doc.est_input_tokens / 1e6 * p["in"] + out_tok / 1e6 * p["out"], 4)
 
     doc.status = STATUS_PROCESSING
     doc.pages_ocred = 0
@@ -250,6 +279,7 @@ async def _process_document(doc_id: int) -> None:
             return
         num_pages = doc.num_pages
         pdf_path = doc.pdf_path
+        model_name = doc.model
         img_subdir = os.path.join(IMAGE_DIR, str(doc_id))
         os.makedirs(img_subdir, exist_ok=True)
 
@@ -262,7 +292,7 @@ async def _process_document(doc_id: int) -> None:
             img_path = os.path.join(img_subdir, f"{page_no}.png")
             await run_in_threadpool(image.save, img_path)
 
-            result = await run_in_threadpool(ocr_pipeline.transcribe_page, image)
+            result = await run_in_threadpool(ocr_pipeline.transcribe_page, image, model_name)
 
             page = Page(
                 document_id=doc_id, page_number=page_no, image_path=img_path,
@@ -391,7 +421,7 @@ async def rerun_page(page_id: int, user: str = Depends(require_user),
     img_path = os.path.join(img_subdir, f"{page.page_number}.png")
     await run_in_threadpool(image.save, img_path)
 
-    result = await run_in_threadpool(ocr_pipeline.transcribe_page, image)
+    result = await run_in_threadpool(ocr_pipeline.transcribe_page, image, doc.model)
     page.image_path = img_path
     page.text = result["text"]
     page.confidence = result["confidence"]

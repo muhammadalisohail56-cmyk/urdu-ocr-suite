@@ -37,6 +37,7 @@ class Document(Base):
     pages_ocred = Column(Integer, nullable=False, default=0)
     status = Column(String, nullable=False, default=STATUS_PENDING)
     error = Column(Text, nullable=False, default="")
+    model = Column(String, nullable=False, default="gemini-2.5-flash")  # model used for this run
 
     # Pre-flight token/cost estimate (computed at upload).
     est_input_tokens = Column(Integer, nullable=False, default=0)
@@ -70,6 +71,7 @@ class Document(Base):
             "pages_ocred": self.pages_ocred,
             "verified_count": self.verified_count(),
             "status": self.status,
+            "model": self.model,
             "error": self.error,
             "avg_confidence": self.avg_confidence(),
             "est_input_tokens": self.est_input_tokens,

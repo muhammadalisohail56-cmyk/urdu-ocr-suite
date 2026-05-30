@@ -43,36 +43,46 @@
       </div>
     </section>
 
-    <!-- Pre-flight estimate modal -->
-    <div x-show="estimate" x-cloak class="fixed inset-0 bg-black/60 flex items-center justify-center z-30">
-      <div class="bg-slate-800 rounded-2xl p-8 w-full max-w-lg space-y-5" @click.away="cancelEstimate()">
-        <h2 class="text-xl font-bold">Confirm OCR Run</h2>
-        <p class="text-slate-400 text-sm">Review the expected Gemini API usage before processing.</p>
+    <!-- Pre-flight model selection + estimate modal -->
+    <div x-show="estimate" x-cloak class="fixed inset-0 bg-black/60 flex items-center justify-center z-30 p-4">
+      <div class="bg-slate-800 rounded-2xl p-8 w-full max-w-2xl space-y-5" @click.away="cancelEstimate()">
+        <div>
+          <h2 class="text-xl font-bold">Choose a model &amp; confirm</h2>
+          <p class="text-slate-400 text-sm mt-1">
+            <span x-text="estimate ? estimate.num_pages : ''"></span>-page document.
+            Pick the model — cost and estimated time are shown for each. Costs are USD, based on Gemini token pricing.
+          </p>
+        </div>
+
         <template x-if="estimate">
-          <div class="grid grid-cols-2 gap-4">
-            <div class="bg-slate-900 rounded-xl p-4">
-              <div class="text-slate-400 text-xs uppercase">Pages</div>
-              <div class="text-2xl font-bold" x-text="estimate.num_pages"></div>
-            </div>
-            <div class="bg-slate-900 rounded-xl p-4">
-              <div class="text-slate-400 text-xs uppercase">Mode</div>
-              <div class="text-2xl font-bold capitalize" x-text="estimate.mode"></div>
-            </div>
-            <div class="bg-slate-900 rounded-xl p-4">
-              <div class="text-slate-400 text-xs uppercase">Est. Tokens (in / out)</div>
-              <div class="text-lg font-semibold"
-                   x-text="fmt(estimate.input_tokens)+' / '+fmt(estimate.output_tokens)"></div>
-            </div>
-            <div class="bg-slate-900 rounded-xl p-4">
-              <div class="text-slate-400 text-xs uppercase">Est. Cost</div>
-              <div class="text-2xl font-bold text-emerald-400" x-text="'$'+estimate.est_cost_usd"></div>
-            </div>
+          <div class="space-y-3">
+            <template x-for="(m, name) in estimate.models" :key="name">
+              <label class="flex items-center gap-4 p-4 rounded-xl border cursor-pointer transition"
+                     :class="chosenModel===name ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-700 bg-slate-900 hover:border-slate-600'">
+                <input type="radio" :value="name" x-model="chosenModel" class="accent-emerald-500" />
+                <div class="flex-1">
+                  <div class="font-semibold" x-text="m.label"></div>
+                  <div class="text-xs text-slate-400" x-text="name"></div>
+                </div>
+                <div class="text-right">
+                  <div class="text-xl font-bold text-emerald-400" x-text="'$'+m.est_cost_usd"></div>
+                  <div class="text-xs text-slate-400">~<span x-text="m.est_time"></span> · <span x-text="fmt(m.total_tokens)"></span> tok</div>
+                </div>
+                <span x-show="name===estimate.recommended"
+                      class="text-[10px] uppercase tracking-wide bg-emerald-600/30 text-emerald-300 px-2 py-0.5 rounded-full">Recommended</span>
+              </label>
+            </template>
+            <p class="text-xs text-slate-500">
+              Estimates only — actual cost depends on how much text each page contains and the model's reasoning. Pro costs more largely because of its internal "thinking" tokens.
+            </p>
           </div>
         </template>
+
         <div class="flex justify-end gap-3 pt-2">
           <button @click="cancelEstimate()" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600">Cancel</button>
-          <button @click="confirmRun()" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold">
-            Start OCR
+          <button @click="confirmRun()" :disabled="!chosenModel"
+                  class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold disabled:opacity-50">
+            Start OCR with <span x-text="shortModel(chosenModel)"></span>
           </button>
         </div>
       </div>
@@ -151,6 +161,10 @@
                           'text-sky-400': doc.status==='processing',
                           'text-red-400': doc.status==='failed'}"
                         class="capitalize" x-text="doc.status"></span>
+                  <div x-show="doc.model && doc.status!=='pending'" class="text-[10px] text-slate-500"
+                       x-text="(doc.model||'').replace('gemini-2.5-','')"></div>
+                  <div x-show="doc.status==='failed' && doc.error" class="text-[10px] text-red-400/70 max-w-[10rem] truncate"
+                       :title="doc.error" x-text="doc.error"></div>
                 </td>
                 <td class="px-4 py-3 text-slate-400 whitespace-nowrap" x-text="dateFmt(doc.date_added)"></td>
                 <td class="px-4 py-3 text-right whitespace-nowrap space-x-2">
@@ -181,7 +195,7 @@
     function dashboard() {
       return {
         documents: [], dragging: false, uploading: false,
-        estimate: null, pendingDoc: null, prog: {}, sockets: {}, search: '',
+        estimate: null, pendingDoc: null, chosenModel: '', prog: {}, sockets: {}, search: '',
 
         get filtered() {
           const q = this.search.trim().toLowerCase();
@@ -227,18 +241,23 @@
             const data = await r.json();
             this.pendingDoc = data.document;
             this.estimate = data.estimate;
+            this.chosenModel = data.estimate.recommended;  // default to recommended
             await this.refresh();
           } finally { this.uploading = false; }
         },
-        cancelEstimate() { this.estimate = null; this.pendingDoc = null; },
+        cancelEstimate() { this.estimate = null; this.pendingDoc = null; this.chosenModel = ''; },
+        shortModel(m) { return (m || '').replace('gemini-2.5-', '') || '…'; },
         async confirmRun() {
-          const id = this.pendingDoc.id;
+          const id = this.pendingDoc.id, model = this.chosenModel;
           this.estimate = null; this.pendingDoc = null;
-          await this.startProcessing(id);
+          await this.startProcessing(id, model);
         },
-        async startExisting(doc) { await this.startProcessing(doc.id); },
-        async startProcessing(id) {
-          const r = await fetch('/api/documents/' + id + '/start', { method: 'POST' });
+        async startExisting(doc) { await this.startProcessing(doc.id, doc.model); },
+        async startProcessing(id, model) {
+          const r = await fetch('/api/documents/' + id + '/start', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(model ? { model } : {}),
+          });
           if (!r.ok) { alert('Could not start: ' + (await r.text())); return; }
           await this.refresh();
           this.listen(id);
